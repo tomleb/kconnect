@@ -18,8 +18,11 @@ package rancher
 
 import (
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/fidelity/kconnect/pkg/config"
 	khttp "github.com/fidelity/kconnect/pkg/http"
@@ -49,7 +52,7 @@ func init() {
 			ConfigurationItemsFunc: ConfigurationItems,
 		},
 		CreateFunc:                 New,
-		SupportedIdentityProviders: []string{"static-token", "rancher-ad"},
+		SupportedIdentityProviders: []string{"static-token", "rancher-ad", "rancher-kubeconfig"},
 	}); err != nil {
 		zap.S().Fatalw("Failed to register Rancher discovery plugin", "error", err)
 	}
@@ -75,8 +78,9 @@ type rancherClusterProviderConfig struct {
 }
 
 type rancherClusterProvider struct {
-	config *rancherClusterProviderConfig
-	token  string
+	config     *rancherClusterProviderConfig
+	token      string
+	restConfig *rest.Config
 
 	httpClient  khttp.Client
 	interactive bool
@@ -94,13 +98,54 @@ func (p *rancherClusterProvider) setup(cs config.ConfigurationSet, userID identi
 	}
 	p.config = cfg
 
-	id, ok := userID.(*identity.TokenIdentity)
-	if !ok {
+	switch id := userID.(type) {
+	case *identity.KubeconfigIdentity:
+		p.token = id.Token()
+		p.restConfig = id.RestConfig()
+	case *identity.TokenIdentity:
+		p.token = id.Token()
+		restConfig, err := generateKubeconfigFromToken(p.config.APIEndpoint, p.token)
+		if err != nil {
+			return err
+		}
+		p.restConfig = restConfig
+	default:
 		return identity.ErrNotTokenIdentity
 	}
-	p.token = id.Token()
 
 	return nil
+}
+
+// Generate the kubeconfig as described in https://ranchermanager.docs.rancher.com/api/quickstart
+func generateKubeconfigFromToken(apiEndpoint, token string) (*rest.Config, error) {
+	url := strings.TrimRight(apiEndpoint, "/v3")
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: "rancher"
+  cluster:
+    server: "%s"
+
+users:
+- name: "rancher"
+  user:
+    token: "%s"
+
+contexts:
+- name: "rancher"
+  context:
+    user: "rancher"
+    cluster: "rancher"
+
+current-context: "rancher"
+`, url, token)
+	fmt.Println(kubeconfig)
+	clientConfig, err := clientcmd.NewClientConfigFromBytes([]byte(kubeconfig))
+	if err != nil {
+		return nil, err
+	}
+
+	return clientConfig.ClientConfig()
 }
 
 func (p *rancherClusterProvider) ListPreReqs() []*provider.PreReq {

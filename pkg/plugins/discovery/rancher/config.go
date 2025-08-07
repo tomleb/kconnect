@@ -22,6 +22,10 @@ import (
 	"fmt"
 	"net/http"
 
+	extv1 "github.com/rancher/rancher/pkg/apis/ext.cattle.io/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 
@@ -29,10 +33,6 @@ import (
 	khttp "github.com/fidelity/kconnect/pkg/http"
 	"github.com/fidelity/kconnect/pkg/provider/discovery"
 	"github.com/fidelity/kconnect/pkg/rancher"
-)
-
-const (
-	generateKubeconfigActionName = "generateKubeconfig"
 )
 
 func (p *rancherClusterProvider) GetConfig(ctx context.Context, input *discovery.GetConfigInput) (*discovery.GetConfigOutput, error) {
@@ -87,29 +87,40 @@ func (p *rancherClusterProvider) getClusterDetails(clusterID string) (*clusterDe
 }
 
 func (p *rancherClusterProvider) getKubeconfig(clusterDetail *clusterDetails) (*api.Config, error) {
-	actionURL, ok := clusterDetail.Actions[generateKubeconfigActionName]
-	if !ok {
-		return nil, ErrNoKubeconfigAction
-	}
-
-	headers := defaults.Headers(defaults.WithJSON(), defaults.WithBearerAuth(p.token))
-	httpClient := khttp.NewHTTPClient()
-
-	resp, err := httpClient.Post(actionURL, "{}", headers)
+	p.logger.Info("Getting kubeconfig from new public API")
+	dynClient, err := dynamic.NewForConfig(p.restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("getting cluster %s kubeconfig using api: %w", clusterDetail.ID, err)
+		return nil, err
 	}
 
-	if resp.ResponseCode() != http.StatusOK {
-		return nil, ErrGettingKubeconfig
+	// Generate a Kubeconfig as described in https://ranchermanager.docs.rancher.com/api/workflows/kubeconfigs#creating-a-kubeconfig
+	obj := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "ext.cattle.io/v1",
+			"kind":       "Kubeconfig",
+			"spec": map[string]any{
+				"description": "Created by kconnect",
+				"clusters": []any{
+					clusterDetail.ID,
+				},
+			},
+		},
+	}
+	gvr := extv1.SchemeGroupVersion.WithResource("kubeconfigs")
+	resp, err := dynClient.Resource(gvr).Create(context.TODO(), obj, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubeconfig: %w", err)
 	}
 
-	kubeconfigResponse := &generateKubeConfigResponse{}
-	if err := json.Unmarshal([]byte(resp.Body()), kubeconfigResponse); err != nil {
-		return nil, fmt.Errorf("unmarshalling api response: %w", err)
+	kubeConfigRaw, found, err := unstructured.NestedString(resp.Object, "status", "value")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("kubeconfig not available")
 	}
 
-	kubeCfg, err := clientcmd.Load([]byte(kubeconfigResponse.Config))
+	kubeCfg, err := clientcmd.Load([]byte(kubeConfigRaw))
 	if err != nil {
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}

@@ -25,7 +25,6 @@ import (
 	"github.com/fidelity/kconnect/pkg/defaults"
 	khttp "github.com/fidelity/kconnect/pkg/http"
 	"github.com/fidelity/kconnect/pkg/provider/discovery"
-	"github.com/fidelity/kconnect/pkg/provider/identity"
 	"github.com/fidelity/kconnect/pkg/rancher"
 )
 
@@ -36,11 +35,6 @@ func (p *rancherClusterProvider) Discover(ctx context.Context, input *discovery.
 
 	p.logger.Info("discovering clusters via Rancher")
 
-	id, ok := input.Identity.(*identity.TokenIdentity)
-	if !ok {
-		return nil, identity.ErrNotTokenIdentity
-	}
-
 	clusters, err := p.listClusters()
 	if err != nil {
 		return nil, fmt.Errorf("listing clusters: %w", err)
@@ -48,7 +42,7 @@ func (p *rancherClusterProvider) Discover(ctx context.Context, input *discovery.
 
 	discoverOutput := &discovery.DiscoverOutput{
 		DiscoveryProvider: ProviderName,
-		IdentityProvider:  id.IdentityProviderName(),
+		IdentityProvider:  input.Identity.IdentityProviderName(),
 		Clusters:          make(map[string]*discovery.Cluster),
 	}
 
