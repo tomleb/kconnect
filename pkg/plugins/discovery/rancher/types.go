@@ -31,7 +31,3 @@ type clusterDetails struct {
 type kubernetesEngineConfig struct {
 	Version string `json:"kubernetesVersion"`
 }
-
-type generateKubeConfigResponse struct {
-	Config string `json:"config"`
-}
