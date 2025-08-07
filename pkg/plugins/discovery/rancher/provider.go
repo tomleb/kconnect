@@ -52,7 +52,7 @@ func init() {
 			ConfigurationItemsFunc: ConfigurationItems,
 		},
 		CreateFunc:                 New,
-		SupportedIdentityProviders: []string{"static-token", "rancher-ad"},
+		SupportedIdentityProviders: []string{"static-token", "rancher-ad", "rancher-kubeconfig"},
 	}); err != nil {
 		zap.S().Fatalw("Failed to register Rancher discovery plugin", "error", err)
 	}
@@ -98,16 +98,20 @@ func (p *rancherClusterProvider) setup(cs config.ConfigurationSet, userID identi
 	}
 	p.config = cfg
 
-	id, ok := userID.(*identity.TokenIdentity)
-	if !ok {
+	switch id := userID.(type) {
+	case *identity.KubeconfigIdentity:
+		p.token = id.Token()
+		p.restConfig = id.RestConfig()
+	case *identity.TokenIdentity:
+		p.token = id.Token()
+		restConfig, err := generateKubeconfigFromToken(p.config.APIEndpoint, p.token)
+		if err != nil {
+			return err
+		}
+		p.restConfig = restConfig
+	default:
 		return identity.ErrNotTokenIdentity
 	}
-	p.token = id.Token()
-	restConfig, err := generateKubeconfigFromToken(p.config.APIEndpoint, p.token)
-	if err != nil {
-		return err
-	}
-	p.restConfig = restConfig
 
 	return nil
 }
